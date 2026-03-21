@@ -1,13 +1,18 @@
 import { useState, useMemo } from "react";
 import {
-  AreaChart, Area, BarChart, Bar, LineChart, Line,
+  AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
 } from "recharts";
 import {
   getAgeGroup, calcBMR, calcTDEE, calcCaloricGoal, calcWaterGoal,
   calcMaxHR, calcHRZones, getSleepGoal, getStepGoal, calcBMI,
+  calcProteinGoal, calcFiberGoal, getSodiumLimit, assessWaistHeight,
+  getRestingHR, getAllWorkouts,
   generateWeeklySteps, generateWeeklySleep,
 } from "../utils/health";
+import CheckInModal from "../components/CheckInModal";
+import VitalsLogger from "../components/VitalsLogger";
+import HealthScore  from "../components/HealthScore";
 
 // ─── Static Data ──────────────────────────────────────────────────────────────
 
@@ -124,6 +129,7 @@ const WORKOUTS = [
 const TABS = [
   { id:"dashboard", icon:"📊", label:"Dashboard" },
   { id:"body",      icon:"🧬", label:"Body" },
+  { id:"vitals",    icon:"🩺", label:"Vitals" },
   { id:"meals",     icon:"🥗", label:"Meals" },
   { id:"workout",   icon:"💪", label:"Workout" },
   { id:"education", icon:"📚", label:"Education" },
@@ -179,22 +185,32 @@ export default function Dashboard({ user, onLogout, onUpdateUser }) {
   const ageGroup = getAgeGroup(age);
 
   // Personalized calculations
+  const userSeed  = user?.email || user?.name || "user";
   const bmr       = useMemo(() => calcBMR(user?.weight, user?.height, age, user?.gender), [user]);
   const tdee      = useMemo(() => calcTDEE(bmr, user?.activityLevel), [bmr, user?.activityLevel]);
   const caloricGoal = useMemo(() => calcCaloricGoal(tdee, user?.healthGoals), [tdee, user?.healthGoals]);
-  const waterGoal = useMemo(() => calcWaterGoal(user?.weight), [user?.weight]);
+  const waterGoal = useMemo(() => calcWaterGoal(user?.weight, user?.activityLevel), [user?.weight, user?.activityLevel]);
   const maxHR     = useMemo(() => calcMaxHR(age), [age]);
-  const hrZones   = useMemo(() => calcHRZones(maxHR), [maxHR]);
+  const restingHR = useMemo(() => getRestingHR(age, userSeed), [age, userSeed]);
+  const hrZones   = useMemo(() => calcHRZones(maxHR, restingHR), [maxHR, restingHR]);
   const sleepGoal = useMemo(() => getSleepGoal(age), [age]);
   const stepGoal  = useMemo(() => getStepGoal(age), [age]);
-  const weeklySteps = useMemo(() => generateWeeklySteps(stepGoal), [stepGoal]);
-  const weeklySleep = useMemo(() => generateWeeklySleep(sleepGoal), [sleepGoal]);
+  const proteinGoal = useMemo(() => calcProteinGoal(user?.weight, user?.activityLevel, user?.healthGoals), [user]);
+  const fiberGoal = useMemo(() => calcFiberGoal(tdee), [tdee]);
+  const sodiumLimit = useMemo(() => getSodiumLimit(age), [age]);
+  const weeklySteps = useMemo(() => generateWeeklySteps(stepGoal, userSeed), [stepGoal, userSeed]);
+  const weeklySleep = useMemo(() => generateWeeklySleep(sleepGoal, userSeed), [sleepGoal, userSeed]);
+  const workouts  = useMemo(() => getAllWorkouts(user?.weight), [user?.weight]);
 
   const todaySteps = weeklySteps[6]?.steps || stepGoal * 0.8;
   const todaySleep = weeklySleep[6]?.sleep || sleepGoal.min;
-  const restingHR  = Math.round(60 + Math.random() * 20);
 
   const [tab, setTab]                 = useState("dashboard");
+  const [showCheckIn, setShowCheckIn] = useState(false);
+  const [checkIns, setCheckIns]       = useState([]);
+  const [vitalsLog, setVitalsLog]     = useState([]);
+  const [waistForm, setWaistForm]     = useState({ waist: "", height: user?.height || "" });
+  const [waistResult, setWaistResult] = useState(null);
   const [selected, setSelected]       = useState(null);
   const [bmiForm, setBmiForm]         = useState({ weight: user?.weight || "", height: user?.height || "" });
   const [bmiResult, setBmiResult]     = useState(() => user?.weight && user?.height ? calcBMI(user.weight, user.height, age, user.gender) : null);
@@ -242,6 +258,8 @@ export default function Dashboard({ user, onLogout, onUpdateUser }) {
   };
 
   const logWorkout = (w) => setLoggedWorkouts([{ ...w, date: new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }) }, ...loggedWorkouts]);
+  const saveCheckIn = (data) => { setCheckIns([{ ...data, date: new Date().toLocaleDateString() }, ...checkIns]); setShowCheckIn(false); };
+  const saveVitals  = (data) => setVitalsLog([{ ...data, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }) }, ...vitalsLog]);
 
   const saveProfile = () => {
     onUpdateUser(profileForm);
@@ -302,10 +320,18 @@ export default function Dashboard({ user, onLogout, onUpdateUser }) {
         {/* ════ DASHBOARD ════ */}
         {tab === "dashboard" && (
           <div className="space-y-4">
-            {/* Tip */}
-            <div className="bg-lime-400/10 border border-lime-400/30 rounded-2xl p-4 flex items-center justify-between gap-4">
-              <p className="text-lime-300 font-medium text-sm">{tips[tipIdx]}</p>
-              <button onClick={() => setTipIdx((tipIdx + 1) % tips.length)} className="text-lime-400 text-sm shrink-0 hover:text-lime-300 transition font-medium">Next →</button>
+            {/* Tip + check-in */}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="bg-lime-400/10 border border-lime-400/30 rounded-2xl p-4 flex items-center justify-between gap-4 flex-1">
+                <p className="text-lime-300 font-medium text-sm">{tips[tipIdx]}</p>
+                <button onClick={() => setTipIdx((tipIdx + 1) % tips.length)} className="text-lime-400 text-sm shrink-0 hover:text-lime-300 transition font-medium">Next →</button>
+              </div>
+              <button onClick={() => setShowCheckIn(true)}
+                className="bg-gray-800 border border-gray-700 hover:border-lime-400/50 rounded-2xl px-5 py-4 flex flex-col items-center gap-1 transition shrink-0">
+                <span className="text-2xl">📋</span>
+                <span className="text-xs font-bold text-gray-300">Daily Check-In</span>
+                {checkIns.length > 0 && <span className="text-xs text-lime-400">{checkIns.length} day streak 🔥</span>}
+              </button>
             </div>
 
             {/* Today's Goal Rings */}
@@ -320,6 +346,52 @@ export default function Dashboard({ user, onLogout, onUpdateUser }) {
                   : <ProgressRing pct={0} color="#f97316" label="Cal Burned" value="Log workout" />
                 }
               </div>
+            </div>
+
+            {/* Health Score + Recent Check-In */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <HealthScore
+                bmi={bmiResult?.val}
+                stepsToday={todaySteps} stepGoal={stepGoal}
+                sleepHrs={checkIns[0]?.sleepHrs || todaySleep} sleepGoal={sleepGoal}
+                waterPct={waterConsumed / waterGoal}
+                bpSystolic={vitalsLog[0]?.systolic}
+                spo2={vitalsLog[0]?.spo2}
+                checkInStreak={checkIns.length}
+              />
+              {checkIns[0] ? (
+                <div className="bg-gray-800 border border-gray-700 rounded-2xl p-5">
+                  <h3 className="font-bold text-sm mb-3">Last Check-In</h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="text-center bg-gray-900 rounded-xl p-3">
+                      <p className="text-3xl">{["😄","😊","😐","😔","😩"][checkIns[0].mood]}</p>
+                      <p className="text-gray-400 text-xs mt-1">Mood</p>
+                    </div>
+                    <div className="text-center bg-gray-900 rounded-xl p-3">
+                      <p className="text-2xl font-black">{checkIns[0].sleepHrs}h</p>
+                      <p className="text-gray-400 text-xs mt-1">Sleep</p>
+                    </div>
+                  </div>
+                  {checkIns[0].symptoms?.length > 0 && !checkIns[0].symptoms.includes("None") && (
+                    <div className="mt-3">
+                      <p className="text-gray-500 text-xs mb-1">Symptoms logged:</p>
+                      <div className="flex flex-wrap gap-1">
+                        {checkIns[0].symptoms.map(s => (
+                          <span key={s} className="text-xs bg-red-400/20 text-red-300 px-2 py-0.5 rounded-full">{s}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {checkIns[0].note && <p className="text-gray-400 text-xs mt-3 italic">"{checkIns[0].note}"</p>}
+                </div>
+              ) : (
+                <div className="bg-gray-800 border border-gray-700 border-dashed rounded-2xl p-5 flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-lime-400/40 transition" onClick={() => setShowCheckIn(true)}>
+                  <span className="text-4xl">📋</span>
+                  <p className="font-bold text-gray-300">No check-in yet today</p>
+                  <p className="text-gray-500 text-sm text-center">Tap to log your mood, sleep, and symptoms</p>
+                  <span className="text-lime-400 text-sm font-bold">+ Start Check-In</span>
+                </div>
+              )}
             </div>
 
             {/* Personalized Stat Cards */}
@@ -399,6 +471,30 @@ export default function Dashboard({ user, onLogout, onUpdateUser }) {
                 </div>
               </div>
             </div>
+
+            {/* Nutrition Targets */}
+            {(proteinGoal || fiberGoal) && (
+              <div className="bg-gray-800 border border-gray-700 rounded-2xl p-5">
+                <h3 className="font-bold text-sm mb-3">Daily Nutrition Targets</h3>
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div className="bg-gray-900 rounded-xl p-3">
+                    <p className="text-xl font-black text-lime-400">{proteinGoal ?? "—"}g</p>
+                    <p className="text-gray-400 text-xs">Protein</p>
+                    <p className="text-gray-600 text-xs mt-0.5">Based on weight & activity</p>
+                  </div>
+                  <div className="bg-gray-900 rounded-xl p-3">
+                    <p className="text-xl font-black text-orange-400">{fiberGoal ?? "—"}g</p>
+                    <p className="text-gray-400 text-xs">Fiber</p>
+                    <p className="text-gray-600 text-xs mt-0.5">14g per 1000 kcal</p>
+                  </div>
+                  <div className="bg-gray-900 rounded-xl p-3">
+                    <p className="text-xl font-black text-red-400">&lt;{sodiumLimit}</p>
+                    <p className="text-gray-400 text-xs">Sodium (mg)</p>
+                    <p className="text-gray-600 text-xs mt-0.5">Age-adjusted limit</p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Calorie & HR info */}
             {(bmr || maxHR) && (
@@ -503,6 +599,86 @@ export default function Dashboard({ user, onLogout, onUpdateUser }) {
           </div>
         )}
 
+        {/* ════ VITALS ════ */}
+        {tab === "vitals" && (
+          <div className="space-y-4 max-w-2xl">
+            <VitalsLogger onSave={saveVitals} />
+
+            {/* Waist-to-height ratio */}
+            <div className="bg-gray-800 border border-gray-700 rounded-2xl p-5">
+              <h3 className="font-bold mb-1">Waist-to-Height Ratio</h3>
+              <p className="text-gray-500 text-xs mb-4">A stronger cardiovascular risk predictor than BMI alone. Ideal: waist &lt; half your height.</p>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="text-gray-400 text-xs mb-1 block">Waist (cm)</label>
+                  <input type="number" placeholder="e.g. 80" value={waistForm.waist}
+                    onChange={e => setWaistForm({ ...waistForm, waist: e.target.value })}
+                    className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:border-lime-400 outline-none transition" />
+                </div>
+                <div>
+                  <label className="text-gray-400 text-xs mb-1 block">Height (cm)</label>
+                  <input type="number" placeholder="e.g. 172" value={waistForm.height}
+                    onChange={e => setWaistForm({ ...waistForm, height: e.target.value })}
+                    className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:border-lime-400 outline-none transition" />
+                </div>
+              </div>
+              <button onClick={() => setWaistResult(assessWaistHeight(waistForm.waist, waistForm.height))}
+                className="w-full bg-lime-400 text-black font-bold py-2.5 rounded-xl hover:bg-lime-300 transition">
+                Calculate
+              </button>
+              {waistResult && (
+                <div className={`mt-3 p-4 rounded-xl border ${waistResult.risk === "Low" ? "border-lime-400/40 bg-lime-400/10" : "border-yellow-400/40 bg-yellow-400/10"}`}>
+                  <div className="flex items-baseline gap-3">
+                    <p className="text-3xl font-black">{waistResult.val}</p>
+                    <p className={`font-bold ${waistResult.color}`}>{waistResult.label}</p>
+                    <span className="text-gray-400 text-sm">· {waistResult.risk} risk</span>
+                  </div>
+                  <p className="text-gray-400 text-sm mt-2">
+                    {waistResult.risk === "Low" ? "Your waist-to-height ratio is in a healthy range." : "Consider lifestyle changes to reduce cardiovascular risk. Consult your doctor."}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Vitals history */}
+            {vitalsLog.length > 0 && (
+              <div className="bg-gray-800 border border-gray-700 rounded-2xl p-5">
+                <h3 className="font-bold mb-3">Vitals History</h3>
+                <div className="space-y-2">
+                  {vitalsLog.map((v, i) => (
+                    <div key={i} className="bg-gray-900 rounded-xl p-3 flex flex-wrap items-center gap-3 text-sm">
+                      <span className="text-gray-500 text-xs">{v.date} {v.time}</span>
+                      {v.systolic && <span className="text-white">BP: <strong>{v.systolic}/{v.diastolic}</strong></span>}
+                      {v.spo2 && <span className="text-white">SpO₂: <strong>{v.spo2}%</strong></span>}
+                      {v.heartRate && <span className="text-white">HR: <strong>{v.heartRate} bpm</strong></span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Check-in history */}
+            {checkIns.length > 0 && (
+              <div className="bg-gray-800 border border-gray-700 rounded-2xl p-5">
+                <h3 className="font-bold mb-3">Check-In History</h3>
+                <div className="space-y-2">
+                  {checkIns.map((c, i) => (
+                    <div key={i} className="bg-gray-900 rounded-xl p-3 flex flex-wrap items-center gap-3 text-sm">
+                      <span className="text-2xl">{["😄","😊","😐","😔","😩"][c.mood]}</span>
+                      <span className="text-gray-500 text-xs">{c.date}</span>
+                      <span className="text-white">Sleep: <strong>{c.sleepHrs}h</strong></span>
+                      {c.weight && <span className="text-white">Weight: <strong>{c.weight}kg</strong></span>}
+                      {c.symptoms?.length > 0 && !c.symptoms.includes("None") && (
+                        <span className="text-red-300 text-xs">{c.symptoms.join(", ")}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ════ MEALS ════ */}
         {tab === "meals" && (
           <div className="space-y-4">
@@ -579,9 +755,10 @@ export default function Dashboard({ user, onLogout, onUpdateUser }) {
               ))}
             </div>
 
+            <p className="text-gray-500 text-xs">Calories calculated using MET formula × your body weight</p>
             <h3 className="font-bold text-sm text-gray-400">Quick Log a Workout</h3>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {WORKOUTS.map(w => (
+              {workouts.map(w => (
                 <button key={w.name} onClick={() => logWorkout(w)}
                   className="bg-gray-800 border border-gray-700 rounded-2xl p-4 text-left hover:border-lime-400/50 transition active:scale-95">
                   <div className="text-3xl mb-2">{w.icon}</div>
@@ -813,6 +990,8 @@ export default function Dashboard({ user, onLogout, onUpdateUser }) {
           </div>
         )}
       </div>
+
+      {showCheckIn && <CheckInModal onSave={saveCheckIn} onClose={() => setShowCheckIn(false)} sleepGoal={sleepGoal} />}
 
       {/* ── Mobile Bottom Nav ── */}
       <div className="fixed bottom-0 left-0 right-0 md:hidden bg-gray-900 border-t border-gray-800 flex justify-around py-2 z-50 overflow-x-auto">
